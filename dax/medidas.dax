@@ -1,0 +1,315 @@
+// =====================================================================
+// Painel de cooperativas de crédito (Sicoob vs mercado) — DAX
+// Versão final: medidas, colunas calculadas e configuração do modelo.
+// =====================================================================
+//
+// RELACIONAMENTOS (todos muitos-para-um, filtro em direção única):
+//   Fato_IFData[Data]               → Dim_Calendario[Data]
+//   Fato_Carteira_Modalidade[Data]  → Dim_Calendario[Data]
+//   Fato_Carteira_Regiao[Data]      → Dim_Calendario[Data]
+//   Fato_Macro[Data]                → Dim_Calendario[Data]
+//   Fato_IFData[CodInst]            → Dim_Instituicao[CodInst]
+//   Fato_Carteira_Modalidade[CodInst] → Dim_Instituicao[CodInst]
+//   Fato_Carteira_Regiao[CodInst]   → Dim_Instituicao[CodInst]
+//   Dim_Instituicao[Sistema]        → Dim_Sistema[Sistema]
+//   Dim_Instituicao[Uf]             → Dim_UF_Regiao[UF]
+// Não ligar Fato_Carteira_Regiao[Regiao] a Dim_UF_Regiao: uma é a
+// região do tomador do crédito, a outra é a região da sede.
+//
+// CONFIGURAÇÃO:
+//   - Opções do arquivo: desligar "Data/hora automática" e
+//     "Detectar automaticamente novas relações".
+//   - Dim_Calendario: Marcar como tabela de datas (coluna Data).
+//   - AnoTrimestre classificada por OrdemTrimestre; MesAno por OrdemMes.
+//   - Tabela de medidas: Modelagem > Nova tabela > _Medidas = {BLANK()}
+//     (ocultar a coluna Value).
+//
+// PADRÕES (e por quê):
+//   - Ativo, Carteira, Captações e PL são SALDOS: cada medida usa só o
+//     trimestre de referência (VAR d = [Data Referencia]). Somar
+//     trimestres multiplicaria o valor.
+//   - [Data Referencia] é o trimestre mais recente do PAINEL, não do
+//     grupo. Sem isso, uma cooperativa que parou de reportar aparecia
+//     como ativa com dados antigos ao agrupar por UF ou cooperativa.
+//   - Variação a/a busca a data exata de 12 meses antes (EOMONTH(d,-12)).
+//   - REMOVEFILTERS com UMA tabela por chamada (limite da versão do
+//     Power BI usada).
+//   - As medidas "genéricas" respondem ao sistema do contexto (linha,
+//     legenda, segmentação). As "… Sicoob" fixam o Sicoob.
+//
+// O QUE ESTES NÚMEROS SÃO: soma das cooperativas SINGULARES de cada
+// sistema, segundo o IF.data. Não é o balanço consolidado que o Sicoob
+// publica (que inclui Banco Sicoob, Centrais etc.). Dez/2025:
+//                        IF.data (singulares)   Relatório oficial
+//   Ativo total               R$ 386,8 bi          R$ 430,1 bi
+//   Carteira de crédito       R$ 209,4 bi          R$ 216,4 bi
+//   Patrimônio líquido        R$  58,5 bi          R$  62,8 bi
+//   Captações / Depósitos     R$ 284,1 bi          R$ 266,9 bi (conceitos diferentes)
+// Os números oficiais ficam numa caixa de texto com a fonte, não em medida.
+// =====================================================================
+
+
+// ---------------------------------------------------------------------
+// TRIMESTRE DE REFERÊNCIA
+// ---------------------------------------------------------------------
+
+Data Referencia =
+CALCULATE(
+    MAX(Fato_IFData[Data]),
+    REMOVEFILTERS(Dim_Instituicao),
+    REMOVEFILTERS(Dim_Sistema),
+    REMOVEFILTERS(Dim_UF_Regiao)
+)
+
+
+// ---------------------------------------------------------------------
+// BASE — respondem ao sistema / cooperativa do contexto
+// Formato: Moeda R$ (Ativo, Carteira, Captações, PL)
+// ---------------------------------------------------------------------
+
+Ativo Total =
+VAR d = [Data Referencia]
+RETURN
+    CALCULATE(SUM(Fato_IFData[Saldo]), Fato_IFData[NomeColuna] = "Ativo Total", Fato_IFData[Data] = d)
+
+Carteira de Credito =
+VAR d = [Data Referencia]
+RETURN
+    CALCULATE(SUM(Fato_IFData[Saldo]), Fato_IFData[NomeColuna] = "Carteira de Crédito", Fato_IFData[Data] = d)
+
+Captacoes =
+VAR d = [Data Referencia]
+RETURN
+    CALCULATE(SUM(Fato_IFData[Saldo]), Fato_IFData[NomeColuna] = "Captações", Fato_IFData[Data] = d)
+
+Patrimonio Liquido =
+VAR d = [Data Referencia]
+RETURN
+    CALCULATE(SUM(Fato_IFData[Saldo]), Fato_IFData[NomeColuna] = "Patrimônio Líquido", Fato_IFData[Data] = d)
+
+Cooperativas Ativas =
+VAR d = [Data Referencia]
+RETURN
+    CALCULATE(
+        DISTINCTCOUNT(Fato_IFData[CodInst]),
+        Fato_IFData[NomeColuna] = "Ativo Total",
+        Fato_IFData[Data] = d,
+        Fato_IFData[Saldo] > 0
+    )
+
+// Use só com uma cooperativa por linha/ponto. No nível de sistema vira
+// média simples, que não é o Basileia do sistema. Formato: porcentagem.
+Indice de Basileia =
+VAR d = [Data Referencia]
+RETURN
+    CALCULATE(AVERAGE(Fato_IFData[Saldo]), Fato_IFData[NomeColuna] = "Índice de Basileia", Fato_IFData[Data] = d)
+
+
+// ---------------------------------------------------------------------
+// VARIAÇÃO ANO CONTRA ANO (existe a partir de 2026-T1, pois 2024 não
+// foi carregado). Formato das "Var": porcentagem.
+// ---------------------------------------------------------------------
+
+Ativo Total Ano Anterior =
+VAR d = [Data Referencia]
+RETURN
+    CALCULATE(
+        SUM(Fato_IFData[Saldo]),
+        Fato_IFData[NomeColuna] = "Ativo Total",
+        Fato_IFData[Data] = EOMONTH(d, -12),
+        REMOVEFILTERS(Dim_Calendario)
+    )
+
+Carteira de Credito Ano Anterior =
+VAR d = [Data Referencia]
+RETURN
+    CALCULATE(
+        SUM(Fato_IFData[Saldo]),
+        Fato_IFData[NomeColuna] = "Carteira de Crédito",
+        Fato_IFData[Data] = EOMONTH(d, -12),
+        REMOVEFILTERS(Dim_Calendario)
+    )
+
+Captacoes Ano Anterior =
+VAR d = [Data Referencia]
+RETURN
+    CALCULATE(
+        SUM(Fato_IFData[Saldo]),
+        Fato_IFData[NomeColuna] = "Captações",
+        Fato_IFData[Data] = EOMONTH(d, -12),
+        REMOVEFILTERS(Dim_Calendario)
+    )
+
+// O IF(ISBLANK(...)) evita -100% para cooperativas que pararam de
+// reportar (valor atual vazio, valor do ano anterior preenchido).
+Var Ativo a-a % = IF(ISBLANK([Ativo Total]), BLANK(), DIVIDE([Ativo Total] - [Ativo Total Ano Anterior], [Ativo Total Ano Anterior]))
+
+Var Carteira a-a % = IF(ISBLANK([Carteira de Credito]), BLANK(), DIVIDE([Carteira de Credito] - [Carteira de Credito Ano Anterior], [Carteira de Credito Ano Anterior]))
+
+Var Captacoes a-a % = IF(ISBLANK([Captacoes]), BLANK(), DIVIDE([Captacoes] - [Captacoes Ano Anterior], [Captacoes Ano Anterior]))
+
+
+// ---------------------------------------------------------------------
+// PARTICIPAÇÃO E RAZÕES (formato: porcentagem)
+// ---------------------------------------------------------------------
+
+Participacao Ativo % =
+DIVIDE(
+    [Ativo Total],
+    CALCULATE([Ativo Total], REMOVEFILTERS(Dim_Sistema), REMOVEFILTERS(Dim_Instituicao))
+)
+
+Participacao Carteira % =
+DIVIDE(
+    [Carteira de Credito],
+    CALCULATE([Carteira de Credito], REMOVEFILTERS(Dim_Sistema), REMOVEFILTERS(Dim_Instituicao))
+)
+
+// Parte do dinheiro captado que virou empréstimo.
+Carteira sobre Captacoes % = DIVIDE([Carteira de Credito], [Captacoes])
+
+// Formato: número decimal.
+Ativo Medio por Coop (R$ mi) = DIVIDE([Ativo Total], [Cooperativas Ativas]) / 1000000
+
+
+// ---------------------------------------------------------------------
+// SICOOB (fixas — não mudam com a segmentação de sistema)
+// ---------------------------------------------------------------------
+
+Ativo Total Sicoob = CALCULATE([Ativo Total], Dim_Sistema[Sistema] = "Sicoob")
+
+Carteira de Credito Sicoob = CALCULATE([Carteira de Credito], Dim_Sistema[Sistema] = "Sicoob")
+
+Captacoes Sicoob = CALCULATE([Captacoes], Dim_Sistema[Sistema] = "Sicoob")
+
+Patrimonio Liquido Sicoob = CALCULATE([Patrimonio Liquido], Dim_Sistema[Sistema] = "Sicoob")
+
+Cooperativas Ativas Sicoob = CALCULATE([Cooperativas Ativas], Dim_Sistema[Sistema] = "Sicoob")
+
+Participacao Ativo Sicoob % = CALCULATE([Participacao Ativo %], Dim_Sistema[Sistema] = "Sicoob")
+
+Var Ativo Sicoob a-a % = CALCULATE([Var Ativo a-a %], Dim_Sistema[Sistema] = "Sicoob")
+
+Var Carteira Sicoob a-a % = CALCULATE([Var Carteira a-a %], Dim_Sistema[Sistema] = "Sicoob")
+
+Var Captacoes Sicoob a-a % = CALCULATE([Var Captacoes a-a %], Dim_Sistema[Sistema] = "Sicoob")
+
+Carteira sobre Captacoes Sicoob % = CALCULATE([Carteira sobre Captacoes %], Dim_Sistema[Sistema] = "Sicoob")
+
+
+// ---------------------------------------------------------------------
+// TEXTOS DOS CARTÕES (linha de baixo dos cartões da página 01)
+// ---------------------------------------------------------------------
+
+Texto Var Ativo =
+VAR v = [Var Ativo Sicoob a-a %]
+RETURN IF(ISBLANK(v), "sem trimestre de comparação", FORMAT(v, "+0.0%;-0.0%") & " vs mesmo trimestre do ano anterior")
+
+Texto Var Carteira =
+VAR v = [Var Carteira Sicoob a-a %]
+RETURN IF(ISBLANK(v), "sem trimestre de comparação", FORMAT(v, "+0.0%;-0.0%") & " vs mesmo trimestre do ano anterior")
+
+Texto Var Captacoes =
+VAR v = [Var Captacoes Sicoob a-a %]
+RETURN IF(ISBLANK(v), "sem trimestre de comparação", FORMAT(v, "+0.0%;-0.0%") & " vs mesmo trimestre do ano anterior")
+
+
+// ---------------------------------------------------------------------
+// ESCALAS PARA TABELAS (formato: número decimal)
+// R$ bi: tabela comparativa da página 02. R$ mi: página 05.
+// ---------------------------------------------------------------------
+
+Ativo (R$ bi) = DIVIDE([Ativo Total], 1000000000)
+
+Carteira (R$ bi) = DIVIDE([Carteira de Credito], 1000000000)
+
+PL (R$ bi) = DIVIDE([Patrimonio Liquido], 1000000000)
+
+Ativo (R$ mi) = DIVIDE([Ativo Total], 1000000)
+
+Carteira (R$ mi) = DIVIDE([Carteira de Credito], 1000000)
+
+Captacoes (R$ mi) = DIVIDE([Captacoes], 1000000)
+
+PL (R$ mi) = DIVIDE([Patrimonio Liquido], 1000000)
+
+
+// ---------------------------------------------------------------------
+// COOPERATIVA SELECIONADA (página 05)
+// ---------------------------------------------------------------------
+
+Titulo Selecionada = IF(HASONEVALUE(Dim_Instituicao[CodInst]), SELECTEDVALUE(Dim_Instituicao[Nome Exibicao]), "Todas as cooperativas do filtro · clique numa linha da tabela")
+
+// Formato: porcentagem. Só aparece com uma cooperativa selecionada.
+Basileia Selecionada = IF(HASONEVALUE(Dim_Instituicao[CodInst]), [Indice de Basileia])
+
+
+// ---------------------------------------------------------------------
+// CARTEIRA POR MODALIDADE E POR REGIÃO (último trimestre)
+// Estes relatórios medem a "carteira ativa" (relatórios 9, 11 e 13),
+// conceito diferente da "Carteira de Crédito" do Resumo.
+// ---------------------------------------------------------------------
+
+Carteira Ativa por Modalidade = SUM(Fato_Carteira_Modalidade[Saldo])
+
+Carteira Ativa por Regiao = SUM(Fato_Carteira_Regiao[Saldo])
+
+
+// ---------------------------------------------------------------------
+// MACROECONOMIA (valores já em %, ex.: 13,65 = 13,65% a.a.)
+// Formato: número decimal (não usar porcentagem).
+// ---------------------------------------------------------------------
+
+Selic a.a. = CALCULATE(AVERAGE(Fato_Macro[Valor]), Fato_Macro[Indicador] = "Selic")
+
+CDI a.a. = CALCULATE(AVERAGE(Fato_Macro[Valor]), Fato_Macro[Indicador] = "CDI")
+
+IPCA no Mes = CALCULATE(SUM(Fato_Macro[Valor]), Fato_Macro[Indicador] = "IPCA")
+
+// Só calcula com os 12 meses completos na janela (começa em dez/2024).
+IPCA 12 Meses =
+VAR fim = MAX(Dim_Calendario[Data])
+VAR meses =
+    CALCULATETABLE(
+        VALUES(Fato_Macro[Data]),
+        Fato_Macro[Indicador] = "IPCA",
+        DATESINPERIOD(Dim_Calendario[Data], fim, -12, MONTH)
+    )
+RETURN
+    IF(
+        COUNTROWS(meses) = 12,
+        (PRODUCTX(
+            meses,
+            1 + CALCULATE(SUM(Fato_Macro[Valor]), Fato_Macro[Indicador] = "IPCA", REMOVEFILTERS(Dim_Calendario)) / 100
+        ) - 1) * 100
+    )
+
+
+// =====================================================================
+// COLUNAS CALCULADAS
+// =====================================================================
+
+// --- Dim_Calendario (eixo mensal do gráfico de juros) ---
+OrdemMes = Dim_Calendario[Ano] * 100 + Dim_Calendario[Mes]
+
+// Classificar MesAno por OrdemMes.
+MesAno = FORMAT(Dim_Calendario[Data], "mmm/yy")
+
+// --- Dim_Instituicao ---
+Municipio UF = Dim_Instituicao[Municipio] & " / " & Dim_Instituicao[Uf]
+
+// Nome fantasia quando existe; senão, a razão social.
+Nome Exibicao = IF(ISBLANK(Dim_Instituicao[NomeFantasia]) || Dim_Instituicao[NomeFantasia] = "", Dim_Instituicao[NomeInstituicao], Dim_Instituicao[NomeFantasia])
+
+// --- Dim_UF_Regiao (criadas para o visual de mapa; o visual final da
+// página 04 usa colunas por UF, porque o mapa do Bing será descontinuado) ---
+Estado = SWITCH(Dim_UF_Regiao[UF],
+    "AC","Acre","AL","Alagoas","AP","Amapá","AM","Amazonas","BA","Bahia","CE","Ceará",
+    "DF","Distrito Federal","ES","Espírito Santo","GO","Goiás","MA","Maranhão",
+    "MT","Mato Grosso","MS","Mato Grosso do Sul","MG","Minas Gerais","PA","Pará",
+    "PB","Paraíba","PR","Paraná","PE","Pernambuco","PI","Piauí","RJ","Rio de Janeiro",
+    "RN","Rio Grande do Norte","RS","Rio Grande do Sul","RO","Rondônia","RR","Roraima",
+    "SC","Santa Catarina","SP","São Paulo","SE","Sergipe","TO","Tocantins")
+
+// Categoria de dados: Local.
+Local Mapa = Dim_UF_Regiao[Estado] & ", Brasil"
